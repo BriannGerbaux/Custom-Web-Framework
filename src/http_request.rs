@@ -1,5 +1,6 @@
 use std::{cell::RefCell, collections::HashMap, io::Write, pin::Pin, rc::Rc, sync::Arc};
-
+use serde::{Serialize, Deserialize};
+use serde_json::Value;
 use tokio::{io::{AsyncWriteExt, BufStream}, net::TcpStream, sync::Mutex};
 
 pub enum RequestType {
@@ -10,8 +11,7 @@ pub enum RequestType {
 
 pub enum RequestBody {
     String(String),
-    Number(f64),
-    Map(HashMap<String, RequestBody>),
+    Map(HashMap<String, Value>),
 }
 
 pub struct RequestHeader {
@@ -78,7 +78,17 @@ impl HttpRequest {
         }
     }
 
-    pub fn parse_body(&mut self, body: &str) {}
+    pub fn parse_body(&mut self, body: &str) {
+        if self.header.content_type.starts_with("text/") {
+            self.body = RequestBody::String(body.to_string());
+        } else if self.header.content_type == "application/json" {
+            let map: HashMap<String, Value> = serde_json::from_str(body).unwrap();
+            self.body = RequestBody::Map(map);
+        } else if self.header.content_type == "application/x-www-form-urlencoded" {
+            let map: HashMap<String, Value> = serde_urlencoded::from_str(body).unwrap();
+            self.body = RequestBody::Map(map);
+        }
+    }
 }
 
 pub struct HttpResponse {
@@ -95,6 +105,16 @@ impl HttpResponse {
     pub fn status(&mut self, status_code: u32) -> &mut Self {
         self.code = status_code;
         return self;
+    }
+
+    pub async fn send_not_found(&self) {
+        let response_str = &format!("HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nContent-length: 0\r\n\r\n");
+
+        match self.tcp_stream.lock().await.write_all(response_str.as_bytes()).await {
+            Err(e) => eprintln!("{}", e),
+            Ok(_) => println!("Successfully sent"),
+        }
+        self.tcp_stream.lock().await.flush().await.unwrap();
     }
 
     pub async fn send(&mut self, msg: &str) {

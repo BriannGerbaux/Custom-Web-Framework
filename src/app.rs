@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use futures::future::{BoxFuture, FutureExt};
+use tokio::io::AsyncReadExt;
 use tokio::io::BufStream;
 use tokio::io::AsyncBufReadExt;
 use tokio::net::TcpListener;
@@ -67,10 +68,32 @@ impl App {
                 }
 
                 //TODO: parse body
+                let mut body_block_buf: Vec<u8> = vec![0; req.header.content_length as usize];
+                buf_stream.lock().await.read_exact(&mut body_block_buf).await.unwrap();
+                let request_block =
+                    String::from_utf8(body_block_buf).expect("Our bytes should be valid utf8").trim().to_string();
+                req.parse_body(&request_block);
 
+
+                let get_lock = get_endpoints_clone.lock().await;
+                let post_lock = post_endpoints_clone.lock().await;
                 let func = match req.request_type {
-                    RequestType::GET => Some(get_endpoints_clone.lock().await.get(&req.route).unwrap().clone()),
-                    RequestType::POST => Some(post_endpoints_clone.lock().await.get(&req.route).unwrap().clone()),
+                    RequestType::GET => {
+                        let map = get_lock.get(&req.route);
+                        let res = match map {
+                            None => None,
+                            Some(s) => Some(s.clone()),
+                        };
+                        res
+                    }
+                    RequestType::POST => {
+                        let map = post_lock.get(&req.route);
+                        let res = match map {
+                            None => None,
+                            Some(s) => Some(s.clone()),
+                        };
+                        res
+                    }
                     RequestType::UNDEFINED => None,
                 };
 
@@ -79,6 +102,8 @@ impl App {
 
                 if func.is_some() {
                     func.unwrap()(req, res).await;
+                } else {
+                    res.send_not_found().await;
                 };
             });
         }
